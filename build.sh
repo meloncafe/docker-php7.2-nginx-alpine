@@ -4,36 +4,41 @@ set -euo pipefail
 IMAGE_NAME="devsaurus/alpine-nginx-php"
 TAG="${1:-7.4}"
 FULL_IMAGE="${IMAGE_NAME}:${TAG}"
+PLATFORMS="linux/amd64,linux/arm64"
 
-echo "=== Building ${FULL_IMAGE} ==="
-docker build -t "${FULL_IMAGE}" .
+# buildx builder 확인/생성
+BUILDER_NAME="multiarch"
+if ! docker buildx inspect "${BUILDER_NAME}" &>/dev/null; then
+    echo "=== Creating buildx builder: ${BUILDER_NAME} ==="
+    docker buildx create --name "${BUILDER_NAME}" --use
+else
+    docker buildx use "${BUILDER_NAME}"
+fi
+
+echo "=== Building ${FULL_IMAGE} (${PLATFORMS}) ==="
+echo ""
+read -p "Build and push to Docker Hub? [y/N] " confirm
+if [[ "${confirm}" =~ ^[Yy]$ ]]; then
+    docker buildx build --platform "${PLATFORMS}" -t "${FULL_IMAGE}" --push .
+    echo ""
+    echo "=== Pushed: ${FULL_IMAGE} ==="
+    echo "=== Platforms: ${PLATFORMS} ==="
+else
+    # 로컬 빌드만 (현재 아키텍처)
+    docker buildx build --platform "${PLATFORMS}" -t "${FULL_IMAGE}" --load . 2>/dev/null || {
+        echo "Multi-arch --load not supported. Building for current platform only."
+        docker build -t "${FULL_IMAGE}" .
+    }
+fi
 
 echo ""
 echo "=== Verifying PHP version ==="
 docker run --rm "${FULL_IMAGE}" php -v
 
 echo ""
-echo "=== Verifying mysqlnd (caching_sha2_password support) ==="
+echo "=== Verifying mysqlnd ==="
 docker run --rm "${FULL_IMAGE}" php -r "echo 'mysqlnd: ' . phpversion('mysqlnd') . PHP_EOL;"
 
 echo ""
-echo "=== Verifying installed extensions ==="
+echo "=== Verifying extensions ==="
 docker run --rm "${FULL_IMAGE}" php -m | grep -iE "pdo|mysql|openssl"
-
-echo ""
-read -p "Push ${FULL_IMAGE} to Docker Hub? [y/N] " confirm
-if [[ "${confirm}" =~ ^[Yy]$ ]]; then
-    docker push "${FULL_IMAGE}"
-
-    # 7-latest 태그도 함께 업데이트
-    docker tag "${FULL_IMAGE}" "${IMAGE_NAME}:7-latest"
-    docker push "${IMAGE_NAME}:7-latest"
-
-    echo ""
-    echo "=== Pushed ==="
-    echo "  ${FULL_IMAGE}"
-    echo "  ${IMAGE_NAME}:7-latest"
-else
-    echo "Skipped push. Run manually:"
-    echo "  docker push ${FULL_IMAGE}"
-fi
